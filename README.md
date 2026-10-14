@@ -1,6 +1,6 @@
 # 接口自动化测试工程（秒杀系统）
 
-![CI](https://github.com/rosyman666/miaosha-api-test/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/rosyman666/miaosha-autotest/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![pytest](https://img.shields.io/badge/test-pytest%209-0A9EDC)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -10,7 +10,7 @@
 ## 目录结构（三层设计）
 
 ```
-miaosha-api-test/
+miaosha-autotest/
 ├── common/
 │   └── api_client.py      # 请求层：Requests 会话封装，登录态自动携带
 ├── data/
