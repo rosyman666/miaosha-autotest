@@ -1,5 +1,10 @@
 # 接口自动化测试工程（秒杀系统）
 
+![CI](https://github.com/rosyman666/miaosha-autotest/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.11-blue)
+![pytest](https://img.shields.io/badge/test-pytest%209-0A9EDC)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 用 Pytest + Requests 对本地秒杀系统做的接口自动化工程，把 Postman 集合里的核心断言迁移成了可一条命令回归的代码用例。
 
 ## 目录结构（三层设计）
@@ -16,9 +21,11 @@ miaosha-autotest/
 │   └── test_miaosha.py    # 用例层：秒杀模块（含写操作用例的 mark 隔离）
 ├── docs/
 │   └── sample-report.html # 一次完整回归的 pytest-html 报告样例
+├── .github/workflows/     # CI：语法检查 + 用例可收集性检查
 ├── conftest.py            # 全局 fixture：一次登录，整个会话复用
 ├── pytest.ini             # 配置：marker 注册、默认报告
 ├── reset-data.bat         # 写操作用例的数据基线重置脚本
+├── LICENSE
 └── requirements.txt
 ```
 
@@ -54,6 +61,21 @@ reset-data.bat
 ```
 
 常规回归跑完会在根目录生成单文件 `report.html`，可直接打开查看；`docs/sample-report.html` 是一次完整回归的报告样例。
+
+## 用例清单（11 条）
+
+| 模块 | 条数 | 覆盖点 |
+|---|---|---|
+| 登录 | 3 | 正常登录并下发 token Cookie；密码错误返回 30010 且不发 token；非法手机号参数校验（缺陷锁定） |
+| 商品 | 3 | 列表页可访问且非空；详情返回 `goods.goodsName`；查不存在商品（缺陷锁定） |
+| 秒杀 | 5 | 验证码接口可访问；错误验证码被拒；`verifyCode=0` 可通过校验（缺陷锁定）；结果轮询接口；完整下单链路（写操作，marker 隔离） |
+
+## 持续集成
+
+`.github/workflows/ci.yml`：push 后自动安装依赖、做语法检查、验证用例可被收集。
+
+被测的秒杀系统是本地部署的（MySQL + Redis + RabbitMQ + 应用 8003），托管 CI 环境里没有这套服务，
+所以 CI 只覆盖「工程可安装、可导入、用例可被发现」这一层，**完整回归在本地服务起来后执行**。
 
 ## 这套用例里藏了三个"缺陷锁定用例"
 

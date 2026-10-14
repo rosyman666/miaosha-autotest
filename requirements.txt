@@ -1,5 +1,5 @@
-pytest
-requests
-pyyaml
-pytest-html
-allure-pytest
+pytest==9.1.1
+requests==2.34.2
+PyYAML==6.0.3
+pytest-html==4.2.0
+allure-pytest==2.16.2
