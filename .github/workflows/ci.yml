@@ -22,12 +22,18 @@ jobs:
           pip install -r requirements.txt
 
       - name: 代码语法检查
-        run: python -m compileall -q common testcases conftest.py
+        run: python -m compileall -q common testcases tools conftest.py
+
+      - name: 命令行工具可用性检查
+        run: |
+          python -m tools --help
+          python -m tools seed --help
+          python -m tools reconcile --help
 
       - name: 用例可收集性检查
         run: python -m pytest --collect-only -q -m "not miaosha_write"
 
 # 说明：被测的秒杀系统是本地部署的（MySQL + Redis + RabbitMQ + 应用 8003），
-# 托管 CI 环境里没有这套服务，因此这里只做「语法检查 + 用例收集」，
+# 托管 CI 环境里没有这套服务，因此这里只做「语法检查 + 工具入口 + 用例收集」，
 # 保证工程本身可安装、可导入、用例可被发现。
-# 完整回归请在本地服务起来后执行：python -m pytest
+# 完整回归与 python -m tools doctor / reconcile 请在本地服务起来后执行。

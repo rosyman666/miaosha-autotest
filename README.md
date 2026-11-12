@@ -14,17 +14,23 @@ miaosha-autotest/
 ├── common/
 │   └── api_client.py      # 请求层：Requests 会话封装，登录态自动携带
 ├── data/
-│   └── env.yaml           # 数据层：环境地址、测试账号（与代码分离）
+│   ├── env.yaml           # 数据层：环境地址、测试账号（与代码分离）
+│   └── env.local.yaml     # 本机私有配置（含库密码），已被 gitignore
 ├── testcases/
 │   ├── test_login.py      # 用例层：登录模块
 │   ├── test_goods.py      # 用例层：商品模块
 │   └── test_miaosha.py    # 用例层：秒杀模块（含写操作用例的 mark 隔离）
+├── tools/                 # 命令行工具：环境自检 / 数据重置 / 缓存对账
+│   ├── __main__.py        # 入口：argparse 子命令
+│   ├── settings.py        # 配置分层：环境变量 > env.local.yaml > env.yaml
+│   ├── storage.py         # 唯一与 MySQL / Redis 建连接的地方，含 Redis key 规则
+│   └── commands/          # doctor / seed / reconcile
 ├── docs/
 │   └── sample-report.html # 一次完整回归的 pytest-html 报告样例
 ├── .github/workflows/     # CI：语法检查 + 用例可收集性检查
 ├── conftest.py            # 全局 fixture：一次登录，整个会话复用
 ├── pytest.ini             # 配置：marker 注册、默认报告
-├── reset-data.bat         # 写操作用例的数据基线重置脚本
+├── reset-data.bat         # 兼容入口，实际调用 python -m tools seed
 ├── LICENSE
 └── requirements.txt
 ```
@@ -52,15 +58,56 @@ python -m venv .venv
 :: 常规回归（只读，不碰库存数据）
 .venv\Scripts\python -m pytest
 
-:: 含秒杀下单的写操作用例（会消耗库存，先执行 reset-data.bat 重置数据）
-reset-data.bat
+:: 含秒杀下单的写操作用例（会消耗库存，先把数据重置回基线）
+.venv\Scripts\python -m tools seed --stock 10
 .venv\Scripts\python -m pytest -m miaosha_write
+
+:: 跑完对账，确认库存、订单、缓存三者一致
+.venv\Scripts\python -m tools reconcile --total 10
 
 :: 生成 Allure 结果（需另装 allure 命令行，再执行 allure serve allure-results）
 .venv\Scripts\python -m pytest --alluredir=allure-results
 ```
 
 常规回归跑完会在根目录生成单文件 `report.html`，可直接打开查看；`docs/sample-report.html` 是一次完整回归的报告样例。
+
+## 配套工具（tools/）
+
+用例只读地验证系统行为；`tools/` 下是允许写操作的命令行工具，用来给回归准备数据基线、核对三层存储。
+
+| 命令 | 作用 |
+|---|---|
+| `python -m tools doctor` | 自检 MySQL、Redis、应用、RabbitMQ；任一必需项不通过时退出码非 0 |
+| `python -m tools seed --stock 10` | 重置基线：DB 库存、清订单、同步 Redis 库存并清下单标记与验证码缓存 |
+| `python -m tools seed --stock 10 --dry-run` | 只打印将要执行的 SQL 与 Redis 命令，不改数据 |
+| `python -m tools reconcile --total 10` | 对账：库存是否一致、已售数量与订单数是否吻合、缓存标记能否对上库内订单 |
+
+**为什么需要 reconcile。** 秒杀系统的库存同时存在于 MySQL 和 Redis，
+“是否已下单”的判定也同时存在于两处。这类不一致在接口层看不出来：
+下单接口返回成功，但库里没有订单，或者有订单却查不到对应的库存扣减。
+对账把这种“看起来成功”的状态变成可检测的差异项：
+
+```
+$ python -m tools reconcile --total 10
+对账结果  goods_id=1
+--------------------------------------------------------------------
+[ OK ] 库存一致   DB 9 == Redis 9
+[FAIL] 库存与订单  按库存推算已售 1，实际订单 0，差 1（疑似超卖或漏单）
+[ OK ] 售罄标记   未标记售罄
+[FAIL] 幽灵订单   1 个缓存标记在库里无对应订单：OrderKey:moug13000000000_1
+[ OK ] 漏缓存    0 笔数据库订单均有缓存标记
+--------------------------------------------------------------------
+发现 2 项不一致
+```
+
+（上面这段是删掉数据库订单、保留 Redis 标记之后的实际输出。）
+
+**配置分层。** `data/env.yaml` 只放地址、端口、库名，密码留空；
+本机密码写 `data/env.local.yaml`（已加入 `.gitignore`），
+也可以用 `MIAOSHA_DB_PASSWORD`、`MIAOSHA_REDIS_PASSWORD`、`MIAOSHA_BASE_URL` 等环境变量覆盖。
+
+**doctor 的一个坑。** 本机装了代理软件时，请求 `localhost:8003` 会被代理转走并返回 502，
+看起来像应用没起来。`doctor` 里显式设了 `trust_env=False`，绕开系统代理再判断。
 
 ## 用例清单（11 条）
 
@@ -120,3 +167,6 @@ REQUEST_ILLEGAL(30004, "访问太频繁!"),        // path 接口验证码校验
 - 为什么登录放 fixture？——session 级登录一次，所有用例复用 Cookie，不重复打登录接口
 - 数据为什么放 YAML？——换环境/换账号不改代码；后面参数化 5000 个种子账号就是换数据文件的事
 - 为什么有用例断言的是"错误行为"？——见上文「缺陷锁定用例」一节：用例也是质量资产，先钉住现状，修复后随版本一起改断言
+- 为什么 reset-data.bat 改成调用 Python？——原来那个 bat 里硬编码了本机 mysql.exe 路径和库密码，换台机器就跑不了，密码还进了公开仓库；现在工具读配置、支持 `--dry-run`、执行后打印前后对比，也能在 CI 里复用
+- 工具为什么用 Python 而不是 Java？——工程本身是 Python，工具和用例共用 `data/env.yaml`，不需要再起一套构建；对账逻辑本身也不依赖语言特性
+- 为什么工具和用例分两个目录？——用例遵守只读约束（写操作要靠 mark 显式打开），工具天然会改数据。放在一起容易让后来者误以为可以直接在用例里改库
