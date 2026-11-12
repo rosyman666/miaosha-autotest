@@ -1,0 +1,243 @@
+# 秒杀模块用例集
+#
+# 秒杀链路：/miaosha/verifyCode（出图）-> /miaosha/path（验码换令牌）-> /miaosha/{path}/do_miaosha（下单）
+#          -> /miaosha/result（轮询结果：0 排队中 / -1 失败 / 正数为订单号）
+#
+# 三个接⼝都挂了 @AccessLimit(seconds=5, maxCount=5)，计数 key 是 URI + 用户名（不带 query）。
+# 用例连着打同一个接口很容易撞上限流，报出来的 30002 长得像业务错误。
+# 所以这里用 rate_limit 声明接口的限流参数，执行器会按调用时间戳自动让路。
+module: 秒杀
+
+cases:
+  - id: MIAOSHA-001
+    title: 验证码接口返回 JPEG 图片
+    severity: blocker
+    note: 响应是图片流不是 JSON，因此按字节长度 + HTTP 状态判断；80x32 的 JPEG 约 1.9KB。
+    request:
+      method: get
+      path: /miaosha/verifyCode
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 200
+      content_length_gt: 1000
+
+  - id: MIAOSHA-002
+    title: 验证码接口缺少 goodsId
+    severity: normal
+    defect: true
+    note: 缺少必填参数本应返回参数错误(10000)，当前被兜底成 10001(系统错误)。
+    request:
+      method: get
+      path: /miaosha/verifyCode
+    expect:
+      status: 200
+      json:
+        code: 10001
+
+  - id: MIAOSHA-003
+    title: 验证码接口 goodsId 传非数字
+    severity: normal
+    defect: true
+    note: 类型转换异常同样被兜底成 10001，前端无从判断是自己传错了还是服务挂了。
+    request:
+      method: get
+      path: /miaosha/verifyCode
+      params:
+        goodsId: "abc"
+    expect:
+      status: 200
+      json:
+        code: 10001
+
+  - id: MIAOSHA-004
+    title: 错误验证码换不到秒杀令牌
+    severity: critical
+    defect: true
+    note: >-
+      行为正确（拒绝了），但错误码用错：返回 30004 REQUEST_ILLEGAL，
+      而 30004 的文案是「访问太频繁!」。用户验证码输错，看到的提示是访问太频繁，
+      排障方向直接被带偏。30004/30002 两个枚举名和文案本身就是对调的。
+    request:
+      method: get
+      path: /miaosha/path
+      params:
+        goodsId: "${goods_id}"
+        verifyCode: 999
+    expect:
+      status: 200
+      json:
+        code: 30004
+        message: "访问太频繁!"
+    rate_limit: {seconds: 5, max_count: 5}
+
+  - id: MIAOSHA-005
+    title: 验证码固定为 0 即可通过校验
+    severity: critical
+    defect: true
+    note: >-
+      根因：MiaoshaService.calc() 用 ScriptEngine 算验证码算式，JDK 17 已移除 Nashorn，
+      取到的 engine 为 null，抛出的异常被 catch 后 return 0，于是 Redis 里存的「正确答案」
+      恒为 0，校验形同虚设。本项目用 JDK 17 启动，这条一直通过。
+      验证码一次性消费，所以先重新生成一张（pre 段），保证单跑这条也能复现。
+    pre:
+      - method: get
+        path: /miaosha/verifyCode
+        params:
+          goodsId: "${goods_id}"
+    request:
+      method: get
+      path: /miaosha/path
+      params:
+        goodsId: "${goods_id}"
+        verifyCode: 0
+    expect:
+      status: 200
+      json:
+        code: 0
+      json_exists:
+        - data
+      json_matches:
+        data: "[0-9a-f]{32}"
+    rate_limit: {seconds: 5, max_count: 5}
+
+  - id: MIAOSHA-006
+    title: 完全不传验证码也能换到秒杀令牌
+    severity: blocker
+    defect: true
+    note: >-
+      接口签名是 @RequestParam(value="verifyCode", defaultValue="0")，
+      不传即按 0 处理，叠加 MIAOSHA-005 的「答案恒为 0」，等于验证码环节可以整段跳过。
+      注意验证码是一次性的：checkVerifyCode 校验通过即删 Redis key，所以要先重新生成一张
+      （pre 段做的就是这个）。攻击者仍然只需要发一次 verifyCode 请求、完全不用看图片内容，
+      再拼一个不带 verifyCode 的 URL 就能拿到下单令牌 —— 人机校验没有起到任何拦截作用。
+    pre:
+      - method: get
+        path: /miaosha/verifyCode
+        params:
+          goodsId: "${goods_id}"
+    request:
+      method: get
+      path: /miaosha/path
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 200
+      json:
+        code: 0
+      json_exists:
+        - data
+    rate_limit: {seconds: 5, max_count: 5}
+
+  - id: MIAOSHA-007
+    title: 结果轮询的返回值符合约定
+    severity: critical
+    note: >-
+      result 的约定：0=排队中、-1=已售罄、正数=订单号。
+      只读回归不该依赖「当前有没有订单」，所以这里只断言取值范围和类型；
+      「seed 之后一定返回 0」由写操作用例组验证（那组本来就要先重置数据）。
+    request:
+      method: get
+      path: /miaosha/result
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 200
+      json:
+        code: 0
+      json_type:
+        data: int
+      json_ge:
+        data: -1
+    rate_limit: {seconds: 5, max_count: 5}
+
+  - id: MIAOSHA-008
+    title: 结果轮询缺少 goodsId
+    severity: normal
+    defect: true
+    note: 同 MIAOSHA-002，缺少必填参数被兜底成 10001。
+    request:
+      method: get
+      path: /miaosha/result
+    expect:
+      status: 200
+      json:
+        code: 10001
+    rate_limit: {seconds: 5, max_count: 5}
+
+  - id: MIAOSHA-009
+    title: 未登录换不到秒杀令牌
+    severity: blocker
+    auth: false
+    request:
+      method: get
+      path: /miaosha/path
+      params:
+        goodsId: "${goods_id}"
+        verifyCode: 0
+    expect:
+      status: 200
+      json:
+        code: 30005
+      json_absent:
+        - data
+
+  - id: MIAOSHA-010
+    title: 未登录取不到验证码
+    severity: blocker
+    auth: false
+    request:
+      method: get
+      path: /miaosha/verifyCode
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: MIAOSHA-011
+    title: 未登录不能轮询秒杀结果
+    severity: critical
+    auth: false
+    request:
+      method: get
+      path: /miaosha/result
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: MIAOSHA-012
+    title: 下单接口缺少 path 段返回 404
+    severity: minor
+    note: 路由是 /miaosha/{path}/do_miaosha，少了 path 段就匹配不到处理器，返回 Spring 默认 404 页。
+    request:
+      method: post
+      path: /miaosha/do_miaosha
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 404
+      json:
+        status: 404
+
+  - id: MIAOSHA-013
+    title: 用伪造的 path 下单被拒绝
+    severity: blocker
+    defect: true
+    note: >-
+      拒绝是对的，但错误码同样返回 30004「访问太频繁」，和 MIAOSHA-004 是同一个错位问题。
+      checkPath 只比对 Redis 里该用户当前的 path，令牌一次性、按用户隔离，这部分设计没问题。
+    request:
+      method: post
+      path: /miaosha/badpath123/do_miaosha
+      params:
+        goodsId: "${goods_id}"
+    expect:
+      status: 200
+      json:
+        code: 30004
+    rate_limit: {seconds: 5, max_count: 5}

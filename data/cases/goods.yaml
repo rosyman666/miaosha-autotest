@@ -1,0 +1,136 @@
+# 商品模块用例集
+#
+# 商品详情是秒杀链路的入口：详情里的 stockCount 决定能不能下单，
+# miaoshaStatus 决定页面显示「立即秒杀 / 倒计时 / 已结束」。
+# 这几条盯着「字段有没有、类型对不对」，因为前端是直接取值渲染的，
+# 字段缺失不会报错，只会白屏。
+module: 商品
+
+cases:
+  - id: GOODS-001
+    title: 商品列表页可访问且返回完整页面
+    severity: critical
+    request:
+      method: get
+      path: /goods/to_list
+    expect:
+      status: 200
+      content_length_gt: 500
+      text_contains:
+        - "商品列表"
+
+  - id: GOODS-002
+    title: 商品详情返回成功且带商品主体信息
+    severity: blocker
+    request:
+      method: get
+      path: /goods/detail/${goods_id}
+    expect:
+      status: 200
+      json:
+        code: 0
+        status: SUCCESS
+      json_exists:
+        - data.goods.id
+        - data.goods.goodsName
+        - data.goods.goodsTitle
+
+  - id: GOODS-003
+    title: 详情里的价格与库存字段类型正确
+    severity: critical
+    note: 价格是浮点、库存是整数；前端直接做数字运算，类型错了页面会显示 NaN。
+    request:
+      method: get
+      path: /goods/detail/${goods_id}
+    expect:
+      status: 200
+      json_type:
+        data.goods.goodsPrice: number
+        data.goods.stockCount: int
+        data.goods.goodsName: str
+      json_gt:
+        data.goods.goodsPrice: 0
+        data.goods.stockCount: 0
+
+  - id: GOODS-004
+    title: 详情带秒杀状态与倒计时字段
+    severity: critical
+    request:
+      method: get
+      path: /goods/detail/${goods_id}
+    expect:
+      status: 200
+      json_exists:
+        - data.miaoshaStatus
+        - data.remainSeconds
+      json_type:
+        data.miaoshaStatus: int
+
+  # ---- 不存在的商品 ----
+  # GoodsService 查不到时没有返回明确业务提示，空对象一路传到取字段的地方抛 NPE，
+  # 被全局异常兜底成 10001「系统错误」。前端拿不到可展示的文案，
+  # 只能弹「系统错误」，用户不知道是商品下架了还是链接错了。
+  - id: GOODS-005
+    title: 查询不存在的商品
+    severity: normal
+    defect: true
+    note: 当前返回 10001(系统错误)；正确应返回明确的「商品不存在」业务码。
+    request:
+      method: get
+      path: /goods/detail/99999
+    expect:
+      status: 200
+      json:
+        code: 10001
+
+  - id: GOODS-006
+    title: goodsId 传非数字
+    severity: normal
+    defect: true
+    note: 路径变量类型转换失败被兜底成 10001；正确应返回参数错误(10000)。
+    request:
+      method: get
+      path: /goods/detail/abc
+    expect:
+      status: 200
+      json:
+        code: 10001
+
+  - id: GOODS-007
+    title: goodsId 传负数
+    severity: normal
+    defect: true
+    note: 当前返回 10001；负数主键应作为参数错误拦截，而不是打到数据库。
+    request:
+      method: get
+      path: /goods/detail/-1
+    expect:
+      status: 200
+      json:
+        code: 10001
+
+  - id: GOODS-008
+    title: goodsId 传 0
+    severity: minor
+    defect: true
+    note: 当前返回 10001；同上，0 不是合法主键。
+    request:
+      method: get
+      path: /goods/detail/0
+    expect:
+      status: 200
+      json:
+        code: 10001
+
+  - id: GOODS-009
+    title: 未登录也能查看商品详情
+    severity: critical
+    auth: false
+    note: 商品详情是公开接口，只有下单需要登录；这条用于钉住「没被误加登录拦截」。
+    request:
+      method: get
+      path: /goods/detail/${goods_id}
+    expect:
+      status: 200
+      json:
+        code: 0

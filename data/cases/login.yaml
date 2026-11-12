@@ -1,0 +1,176 @@
+# 登录模块用例集
+#
+# 字段说明：
+#   id        用例编号，报告里按它定位
+#   title     一句话说明这条验的是什么
+#   severity  blocker / critical / normal / minor / trivial，对应 Allure 严重级
+#   auth      true=用已登录会话；false=用干净会话（验证未登录/登录失败场景）
+#   defect    true=缺陷锁定用例：断言的是「当前真实行为」，项目修好后本条会失败
+#   note      补充说明，会作为 Allure 用例描述
+#   rate_limit  声明接口的 @AccessLimit，执行器会自动让路，避免用例互相踩限流
+#   request   method / path / form / params / json / headers
+#   expect    断言声明，支持项见 common/expectation.py 的 SUPPORTED_KEYS
+module: 登录
+
+cases:
+  - id: LOGIN-001
+    title: 正确手机号与密文登录成功，下发 token
+    severity: blocker
+    note: 密码传前端双层加盐 MD5 后的 32 位密文，明文既不写进仓库也不写进用例。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "${user.mobile}"
+        password: "${user.password_cipher}"
+    expect:
+      status: 200
+      json:
+        code: 0
+        status: SUCCESS
+      cookie:
+        token: present
+      header_contains:
+        Set-Cookie: "token="
+
+  - id: LOGIN-002
+    title: 密码密文错误返回 30010，不发放 token
+    severity: critical
+    auth: false
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "${user.mobile}"
+        password: "00000000000000000000000000000000"
+    expect:
+      status: 200
+      json:
+        code: 30010
+        status: PASSWORD_ERROR
+      cookie:
+        token: absent
+
+  - id: LOGIN-003
+    title: 手机号不存在返回 30009
+    severity: critical
+    auth: false
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "13900000099"
+        password: "${user.password_cipher}"
+    expect:
+      status: 200
+      json:
+        code: 30009
+        status: MOBILE_NOT_EXIST
+      cookie:
+        token: absent
+
+  # ---- 以下 6 条是同一个缺陷的 6 个入口 ----
+  # LoginVo 上声明了 @NotNull / @MobileCheck / @Length(min=32)，
+  # 参数不合法时本该返回 30001(BIND_ERROR) 并带上具体校验信息；
+  # 实际 GlobleExceptionHandler 把 BindException 一律映射成 SESSION_ERROR(30005)，
+  # 前端只会提示「Session 不存在或者已经失效」，用户看到的和真实原因完全无关。
+  # 枚举里 PASSWORD_EMPTY / MOBILE_EMPTY / MOBILE_ERROR 三个更精确的码同样没被用上。
+  - id: LOGIN-004
+    title: 密码长度不足 32 位被拒绝
+    severity: normal
+    auth: false
+    defect: true
+    note: 当前返回 30005(会话失效)；正确应为 30001(参数校验异常)。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "${user.mobile}"
+        password: "123456"
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: LOGIN-005
+    title: 密码为空被拒绝
+    severity: normal
+    auth: false
+    defect: true
+    note: 当前返回 30005；枚举里有专用的 PASSWORD_EMPTY(30006) 却没有用。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "${user.mobile}"
+        password: ""
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: LOGIN-006
+    title: 缺少 mobile 字段被拒绝
+    severity: normal
+    auth: false
+    defect: true
+    note: 当前返回 30005；正确应为 30001 或 MOBILE_EMPTY(30007)。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        password: "${user.password_cipher}"
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: LOGIN-007
+    title: 缺少 password 字段被拒绝
+    severity: normal
+    auth: false
+    defect: true
+    note: 当前返回 30005；正确应为 30001 或 PASSWORD_EMPTY(30006)。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "${user.mobile}"
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: LOGIN-008
+    title: 手机号格式非法被拒绝
+    severity: normal
+    auth: false
+    defect: true
+    note: 5 位数字不满足 @MobileCheck；当前返回 30005，正确应为 MOBILE_ERROR(30008)。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: "12345"
+        password: "${user.password_cipher}"
+    expect:
+      status: 200
+      json:
+        code: 30005
+
+  - id: LOGIN-009
+    title: 手机号为空串被拒绝
+    severity: normal
+    auth: false
+    defect: true
+    note: 当前返回 30005；正确应为 MOBILE_EMPTY(30007)。
+    request:
+      method: post
+      path: /login/do_login
+      form:
+        mobile: ""
+        password: "${user.password_cipher}"
+    expect:
+      status: 200
+      json:
+        code: 30005
