@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint-and-collect:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +31,30 @@ jobs:
           python -m tools reconcile --help
 
       - name: 用例可收集性检查
-        run: python -m pytest --collect-only -q -m "not miaosha_write"
+        run: python -m pytest --collect-only -q
+
+      - name: 框架自检（断言引擎 + 用例数据校验，不依赖被测服务）
+        run: python -m pytest testcases/test_framework.py -q --alluredir=allure-results
+
+      - name: 生成 Allure 报告
+        if: always()
+        run: |
+          curl -sSL -o /tmp/allure.zip https://github.com/allure-framework/allure2/releases/download/2.30.0/allure-2.30.0.zip
+          unzip -q /tmp/allure.zip -d /tmp/allure
+          /tmp/allure/allure-2.30.0/bin/allure generate allure-results -o allure-report --clean
+
+      - name: 上传 Allure 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report
+          retention-days: 7
 
 # 说明：被测的秒杀系统是本地部署的（MySQL + Redis + RabbitMQ + 应用 8003），
-# 托管 CI 环境里没有这套服务，因此这里只做「语法检查 + 工具入口 + 用例收集」，
-# 保证工程本身可安装、可导入、用例可被发现。
-# 完整回归与 python -m tools doctor / reconcile 请在本地服务起来后执行。
+# 托管 CI 环境里没有这套服务，因此这里只做四件事：
+#   1. 工程可安装、可导入（语法检查）
+#   2. 命令行工具入口可用
+#   3. 用例可被收集（YAML 语法错、parametrize 写错在这一步就会失败）
+#   4. 框架自检：断言引擎单测 + 用例数据结构校验，这部分不碰网络，能在 CI 里真跑
+# 完整回归（pytest / -m miaosha_write）请在本地服务起来后执行。
